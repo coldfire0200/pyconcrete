@@ -16,7 +16,11 @@
 
 import imp
 import marshal
-import sys
+import sys, re
+from zipfile import ZipFile
+# avoid Exception: maximum recursion depth exceeded while calling a Python object
+import encodings.cp437, pkgutil, weakref
+
 from os.path import exists, isdir, join
 
 EXT_PY = '.py'
@@ -35,12 +39,22 @@ decrypt_buffer = _pyconcrete.decrypt_buffer
 
 
 class PyeLoader(object):
+    zip_pattern = re.compile(r'(.*\.zip)\\(.+)')
     def __init__(self, is_pkg, pkg_path, full_path):
         self.is_pkg = is_pkg
         self.pkg_path = pkg_path
         self.full_path = full_path
-        with open(full_path, 'rb') as f:
-            self.data = f.read()
+        match = self.zip_pattern.match(full_path)
+        if match:
+            try:
+                with ZipFile(match.group(1), 'r') as zip_file:
+                    with zip_file.open(match.group(2).replace('\\', '/')) as file_in_zip:
+                        self.data = file_in_zip.read()
+            except Exception as e:
+                print(f'Exception: {e}')
+        else:
+            with open(full_path, 'rb') as f:
+                self.data = f.read()
 
     def new_module(self, fullname, path, package_path):
         m = imp.new_module(fullname)
@@ -102,10 +116,10 @@ class PyeLoader(object):
 
 
 class PyeMetaPathFinder(object):
+    zip_pattern = re.compile(r'(.*\.zip)\\(.+)')
     def find_module(self, fullname, path=None):
         mod_name = fullname.split('.')[-1]
         paths = path if path else sys.path
-
         for trypath in paths:
             mod_path = join(trypath, mod_name)
             is_pkg = isdir(mod_path)
@@ -116,8 +130,21 @@ class PyeMetaPathFinder(object):
                 full_path = mod_path + EXT_PYE
                 pkg_path = trypath
 
-            if exists(full_path):
+            if self.exists_in_fs_or_zip(full_path):
                 return PyeLoader(is_pkg, pkg_path, full_path)
-
-
+            
+    def exists_in_fs_or_zip(self, full_path):
+        match = self.zip_pattern.match(full_path)
+        if match:
+            try:
+                with ZipFile(match.group(1), 'r') as zip_file:
+                    if match.group(2).replace('\\', '/') in zip_file.namelist():
+                        return True
+                    return False
+            except Exception as e:
+                print(f'Exception: {e}')
+            return False
+        else:
+            return exists(full_path)
+        
 sys.meta_path.insert(0, PyeMetaPathFinder())
